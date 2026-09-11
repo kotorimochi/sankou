@@ -1,0 +1,201 @@
+require "sinatra"
+require "json"
+require "net/http"
+
+set :host_authorization, { permitted_hosts: [] }
+
+# /webhook（URL）にPOSTされたら
+post "/webhook" do
+  # dodyの中を見る変数（dody以外にも指定することが可能）
+  body = request.body.read
+  
+  # jsonをrubyように変換する
+  data = JSON.parse(body)
+  
+  # 配列ではない。目的地に辿り着くための道順。取れるのは最後の1つだけ。
+  text = data["events"][0]["message"]["text"]
+  user_id = data["events"][0]["source"]["userId"]
+  
+  # もし、textに登録が含まれたなら
+  if text.include?("登録")
+    
+    # ※ これなんで配列指定しているのかClaudeに聞く
+    name = text.split(" ")[1]
+  
+    uri = URI("https://YOUR_SUBDOMAIN.cybozu.com/k/v1/record.json")
+   
+   # インスタンスに渡すhostやportは、kintone指定
+    http = Net::HTTP.new(uri.host, uri.port)
+  
+    http.use_ssl = true
+
+    req = Net::HTTP::Post.new(uri)
+    req["X-Cybozu-API-Token"] = "YOUR_API_TOKEN"
+    req["Content-Type"] = "application/json"
+    req.body = {
+      app: 2,
+      record: {
+        # 左：kintoneのフィールドコード
+        # 右：Rubyの変数
+        name: { value: name }, 
+        userid:   { value: user_id }   
+      }
+    }.to_json
+
+    res = http.request(req)
+    puts res.body  
+
+  elsif text == "出勤"
+    now = Time.now
+    today = now.strftime("%Y-%m-%d")
+    in_time = now.strftime("%Y-%m-%d %H:%M")
+
+    uri = URI("https://YOUR_SUBDOMAIN.cybozu.com/k/v1/records.json")
+
+    # URLの ? の後ろに乗る。これでは作っただけで使われてない
+    query = "userid = \"#{user_id}\""
+
+    # uri が持ってる query という部分を指している
+    uri.query = URI.encode_www_form(app: 2, query: query)
+
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = true
+
+    req = Net::HTTP::Get.new(uri)
+    req["X-Cybozu-API-Token"] = "YOUR_API_TOKEN"
+
+    # req["Content-Type"] = "application/json"不要。bodyがあるときだけ
+
+    res = http.request(req)
+    puts res.body
+    
+    # resultの中に返却されてたresのbodyをrubyに変換
+    result = JSON.parse(res.body)
+    
+    if result["records"].empty?
+      puts "社員登録がされていません"
+    else
+
+    # nameの中にresultのレコードから値を取り出す
+    name = result["records"][0]["name"]["value"]
+
+# ユーザーをIDと今日の日付で検索（その日の出勤時間を取得）
+query = "date = \"#{today}\" and userid = \"#{user_id}\""
+
+uri = URI("https://YOUR_SUBDOMAIN.cybozu.com/k/v1/records.json")
+
+# 「.」がついているとメソッド呼び出し。直接入れている。通常の定義とは異なる
+# したがって、アプリIDとクエリ（上記）をエンコードしてクエリ直で入れてる
+# encode_www_formメソッドに引数を渡している(app: 1, query: query)
+uri.query = URI.encode_www_form(app: 1, query: query)
+
+# インスタンス生成
+http = Net::HTTP.new(uri.host, uri.port)
+http.use_ssl = true
+
+# Getのリクエストインスタンス生成
+req = Net::HTTP::Get.new(uri)
+req["X-Cybozu-API-Token"] = "YOUR_API_TOKEN"
+
+# resを定義。requestメソッドにreqを渡す
+res = http.request(req)
+
+# resのボディをrubyに変換してresultに入れる
+result = JSON.parse(res.body)
+
+puts result
+
+# resultの中のrecordsが空だったら実行
+if result["records"].empty?
+    
+    
+    uri = URI("https://YOUR_SUBDOMAIN.cybozu.com/k/v1/record.json")
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = true
+
+    req = Net::HTTP::Post.new(uri)
+    req["X-Cybozu-API-Token"] = "YOUR_API_TOKEN"
+    req["Content-Type"] = "application/json"
+    req.body = {
+      app: 1,
+      record: {
+        date:    { value: today },
+        in_time: { value: in_time },
+        userid:  { value: user_id },
+        name:    { value: name } 
+      }
+    }.to_json
+
+    res = http.request(req)
+    puts res.body
+
+    else
+  puts "すでに出勤済みです"
+    end
+
+  end
+  elsif text == "退勤"
+    now = Time.now
+    today = now.strftime("%Y-%m-%d")
+    out_time = now.strftime("%Y-%m-%d %H:%M")
+  
+    # クエリで今日の日付かつユーザーIDをフィルタ
+    query = "date = \"#{today}\" and userid = \"#{user_id}\""
+    uri = URI("https://YOUR_SUBDOMAIN.cybozu.com/k/v1/records.json")
+  
+    # 左辺にドットが無い → 変数代入（新しい入れ物を作る）。左辺にドットがある → メソッド呼び出し（既にあるものを書き換える）
+    uri.query = URI.encode_www_form(app: 1, query: query)
+  
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = true
+  
+    req = Net::HTTP::Get.new(uri)
+    req["X-Cybozu-API-Token"] = "YOUR_API_TOKEN"
+  
+    res = http.request(req)
+  
+    # JSON（文字列）からRuby（ハッシュ）に使えるように変換したものをdataに入れる
+    result = JSON.parse(res.body)
+  
+    # もし、resultの中のrecordsが空だったら「empty?」は「true」を返す
+    # Rubyでは、階層は[]で表す（取り出す時）
+    # 「.empty?」の「.」は動作の際つける。ちなみに、「.empty?」は、空かどうかをブール値で返す
+    if result["records"].empty?
+      puts "出勤記録が見つかりません"
+    else
+      
+      # 0番目のレコードの判定でOK。次の日にはクエリで新しいレコードが対象となる
+      record_id = result["records"][0]["$id"]["value"]
+     
+      # コンソールにレコードIDを出す
+      puts "レコードID: #{record_id}"
+
+
+      uri = URI("https://YOUR_SUBDOMAIN.cybozu.com/k/v1/record.json")
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+
+      req = Net::HTTP::Put.new(uri)
+      req["X-Cybozu-API-Token"] = "YOUR_API_TOKEN"
+      req["Content-Type"] = "application/json"
+      req.body = {
+        app: 1,
+        id: record_id,
+        record: {
+          date:    { value: today },
+          out_time: { value: out_time },
+          userid:  { value: user_id }
+        }
+      }.to_json
+
+      res = http.request(req)
+      puts res.body
+      
+    end
+
+  else
+    puts "出勤か退勤を入力してください"
+  end
+
+  "受け取ったよ"
+end
